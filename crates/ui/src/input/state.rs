@@ -457,6 +457,11 @@ impl InputState {
         }
     }
 
+    /// Re-runs LSP state for the current text without changing the value, selection, or scroll.
+    pub fn refresh_lsp(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.lsp.update(&self.text, window, cx);
+    }
+
     /// Set Input to use multi line mode.
     ///
     /// Default rows is 2.
