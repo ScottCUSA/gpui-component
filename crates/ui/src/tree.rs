@@ -211,6 +211,30 @@ impl TreeState {
         }
     }
 
+
+    /// Returns each expanded folder `id` in depth-first order (under each root).
+    pub fn expanded_folder_ids(&self) -> Vec<SharedString> {
+        let mut out = Vec::new();
+        for entry in &self.entries {
+            if entry.is_root() {
+                Self::push_expanded_folder_ids(&entry.item, &mut out);
+            }
+        }
+        out
+    }
+
+    fn push_expanded_folder_ids(item: &TreeItem, out: &mut Vec<SharedString>) {
+        let mut stack = vec![item];
+        while let Some(item) = stack.pop() {
+            if !item.is_folder() || !item.is_expanded() {
+                continue;
+            }
+            out.push(item.id.clone());
+            // Reverse to preserve left-to-right order in DFS traversal
+            stack.extend(item.children.iter().rev());
+        }
+    }
+
     /// Set the tree items.
     pub fn items(mut self, items: impl Into<Vec<TreeItem>>) -> Self {
         let items = items.into();
