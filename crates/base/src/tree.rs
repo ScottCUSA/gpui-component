@@ -247,6 +247,14 @@ impl TreeState {
         self.selected_ix.and_then(|ix| self.entries.get(ix))
     }
 
+    /// Toggles expansion for the folder at `ix` without changing the selected index, then notifies.
+    ///
+    /// Use this for disclosure controls; list row clicks also move selection when expanding.
+    pub fn toggle_folder_expand(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.toggle_expand(ix, cx);
+        cx.notify();
+    }
+
     pub fn entry(&self, ix: usize) -> Option<&TreeEntry> {
         self.entries.get(ix)
     }
@@ -359,6 +367,10 @@ impl TreeState {
     }
 
     fn rebuild_entries(&mut self) {
+        // Flat indices change when the visible row list is rebuilt; track selection by item id.
+        let selected_id = self
+            .selected_ix
+            .and_then(|ix| self.entries.get(ix).map(|entry| entry.item.id.clone()));
         let roots = self
             .entries
             .iter()
@@ -366,6 +378,7 @@ impl TreeState {
             .map(|entry| entry.item.clone())
             .collect::<Vec<_>>();
         self.replace_items(roots);
+        self.selected_ix = selected_id.and_then(|id| self.index_of(&id));
     }
 
     fn on_action_confirm(&mut self, _: &Confirm, _: &mut Window, cx: &mut Context<Self>) {
@@ -684,6 +697,48 @@ mod tests {
                 state.expanded_folder_ids(),
                 vec![SharedString::from("a"), SharedString::from("a/b")]
             );
+        });
+    }
+
+    #[gpui::test]
+    fn test_toggle_folder_expand_does_not_change_selected_index(cx: &mut gpui::TestAppContext) {
+        let items = vec![
+            TreeItem::new("root", "root").expanded(true).child(
+                TreeItem::new("root/inner", "inner")
+                    .expanded(true)
+                    .child(TreeItem::new("root/inner/a", "a")),
+            ),
+        ];
+        let state = cx.new(|cx| TreeState::new(cx).items(items));
+        state.update(cx, |state, ctx| {
+            state.set_selected_index(Some(1), ctx);
+            let ix_before = state.selected_index();
+            state.toggle_folder_expand(1, ctx);
+            assert_eq!(state.selected_index(), ix_before);
+            assert!(!state.entries[1].is_expanded());
+        });
+    }
+
+    #[gpui::test]
+    fn test_rebuild_preserves_selected_item_by_id(cx: &mut gpui::TestAppContext) {
+        let items = vec![
+            TreeItem::new("a", "a")
+                .expanded(false)
+                .child(TreeItem::new("a/c", "c")),
+            TreeItem::new("b", "b"),
+        ];
+        let state = cx.new(|cx| TreeState::new(cx).items(items));
+        state.update(cx, |state, ctx| {
+            let b_id = state.entries[1].item.id.clone();
+            state.set_selected_index(Some(1), ctx);
+            state.toggle_expand(0, ctx);
+            ctx.notify();
+            let b_ix = state
+                .entries
+                .iter()
+                .position(|e| e.item.id == b_id)
+                .expect("selected item still present after expand");
+            assert_eq!(state.selected_index(), Some(b_ix));
         });
     }
 }
