@@ -1,9 +1,9 @@
-use instant::Duration;
 use anyhow::Result;
 use gpui::{App, Context, Task, Window};
+use instant::Duration;
 use ropey::Rope;
 
-use crate::input::{popovers::HoverPopover, InputState, RopeExt};
+use crate::input::{InputState, RopeExt, popovers::HoverPopover};
 
 /// Hover provider
 ///
@@ -57,18 +57,27 @@ impl InputState {
 
             let result = task.await?;
 
-            _ = editor.update(cx, |editor, cx| match result {
-                Some(hover) => {
-                    if let Some(range) = hover.range {
-                        let start = editor.text.position_to_offset(&range.start);
-                        let end = editor.text.position_to_offset(&range.end);
-                        symbol_range = start..end;
+            _ = editor.update(cx, |editor, cx| {
+                let had_popover = editor.hover_popover.is_some();
+                match result {
+                    Some(hover) => {
+                        if let Some(range) = hover.range {
+                            let start = editor.text.position_to_offset(&range.start);
+                            let end = editor.text.position_to_offset(&range.end);
+                            symbol_range = start..end;
+                        }
+                        let hover_popover =
+                            HoverPopover::new(cx.entity(), symbol_range, &hover, cx);
+                        editor.hover_popover = Some(hover_popover);
+                        // Resolved off a background task, notify to paint the popover.
+                        cx.notify();
                     }
-                    let hover_popover = HoverPopover::new(cx.entity(), symbol_range, &hover, cx);
-                    editor.hover_popover = Some(hover_popover);
-                }
-                None => {
-                    editor.hover_popover = None;
+                    None => {
+                        editor.hover_popover = None;
+                        if had_popover {
+                            cx.notify();
+                        }
+                    }
                 }
             });
 
