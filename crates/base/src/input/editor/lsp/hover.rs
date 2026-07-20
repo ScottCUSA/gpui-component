@@ -58,6 +58,7 @@ impl InputBaseState {
             let result = task.await?;
 
             _ = editor.update(cx, |editor, cx| {
+                let had_popover = editor.hover_popover.is_some();
                 match result {
                     Some(hover) => {
                         if let Some(range) = hover.range {
@@ -69,12 +70,15 @@ impl InputBaseState {
                             symbol_range,
                             hover,
                         });
+                        cx.notify();
                     }
                     None => {
                         editor.hover_popover = None;
+                        if had_popover {
+                            cx.notify();
+                        }
                     }
                 }
-                cx.notify();
             });
 
             Ok(())
