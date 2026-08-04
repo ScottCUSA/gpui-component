@@ -150,6 +150,23 @@ let input = cx.new(|cx|
 );
 ```
 
+### 滚动位置
+
+多行输入框和代码编辑器可以读取并设置视口滚动偏移。在多个编辑器之间同步滚动时，请使用 [`effective_scroll_offset`](https://docs.rs/gpui-component/latest/gpui_component/input/struct.InputState.html#method.effective_scroll_offset)，以便在绘制提交之前观察到 [`set_scroll_offset`](https://docs.rs/gpui-component/latest/gpui_component/input/struct.InputState.html#method.set_scroll_offset) 安排的待处理值。若需区分待处理偏移与已提交的 [`scroll_offset`](https://docs.rs/gpui-component/latest/gpui_component/input/struct.InputState.html#method.scroll_offset)，请使用 [`scroll_offset_pending`](https://docs.rs/gpui-component/latest/gpui_component/input/struct.InputState.html#method.scroll_offset_pending)。
+
+```rust
+use gpui::point;
+
+// 观察下一帧绘制将使用的偏移。
+let offset = state.effective_scroll_offset();
+
+// 将源面板的偏移映射到目标面板的有效滚动范围。
+let sync_offset = target_state.clamp_scroll_offset(source_offset);
+target_input.update(cx, |state, cx| {
+    state.set_scroll_offset(sync_offset, cx);
+});
+```
+
 ### 监听事件
 
 ```rust
