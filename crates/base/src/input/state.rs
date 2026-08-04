@@ -1931,26 +1931,9 @@ impl InputState {
         offset: Option<Point<Pixels>>,
         cx: &mut Context<Self>,
     ) {
-        let mut offset = offset.unwrap_or(self.scroll_handle.offset());
-        // In addition to left alignment, a cursor position will be reserved on the right side
-        let safe_x_offset = if self.text_align == TextAlign::Left {
-            px(0.)
-        } else {
-            -CURSOR_WIDTH
-        };
-
-        let safe_y_range =
-            (-self.scroll_size.height + self.input_bounds.size.height).min(px(0.0))..px(0.);
-        let safe_x_range = (-self.scroll_size.width + self.input_bounds.size.width + safe_x_offset)
-            .min(safe_x_offset)..px(0.);
-
-        offset.y = if self.mode.is_single_line() {
-            px(0.)
-        } else {
-            offset.y.clamp(safe_y_range.start, safe_y_range.end)
-        };
-        offset.x = offset.x.clamp(safe_x_range.start, safe_x_range.end);
-        self.scroll_handle.set_offset(offset);
+        let offset = offset.unwrap_or_else(|| self.scroll_handle.offset());
+        self.scroll_handle
+            .set_offset(self.clamp_scroll_offset(offset));
         cx.notify();
     }
 
@@ -2143,12 +2126,52 @@ impl InputState {
         self.scroll_handle.offset()
     }
 
+    /// Pending offset from [`Self::set_scroll_offset`], if any.
+    pub fn scroll_offset_pending(&self) -> Option<gpui::Point<gpui::Pixels>> {
+        self.deferred_scroll_offset
+    }
+
+    /// Pending or current scroll offset; use to observe or sync scroll.
+    pub fn effective_scroll_offset(&self) -> gpui::Point<gpui::Pixels> {
+        self.scroll_offset_pending()
+            .unwrap_or_else(|| self.scroll_offset())
+    }
+
     /// Set scroll offset of the editor viewport.
     ///
     /// The offset will be clamped to the valid range, and applied after the next layout.
     pub fn set_scroll_offset(&mut self, offset: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
         self.deferred_scroll_offset = Some(offset);
         cx.notify();
+    }
+
+    /// Clamps `offset` to the valid scroll range for the current layout.
+    pub fn clamp_scroll_offset(
+        &self,
+        offset: gpui::Point<gpui::Pixels>,
+    ) -> gpui::Point<gpui::Pixels> {
+        let safe_x_offset = if self.text_align == TextAlign::Left {
+            px(0.)
+        } else {
+            -CURSOR_WIDTH
+        };
+        let min_y = if self.mode.is_single_line() {
+            px(0.)
+        } else {
+            (-self.scroll_size.height + self.input_bounds.size.height).min(px(0.0))
+        };
+        let max_y = px(0.);
+        let min_x = (-self.scroll_size.width + self.input_bounds.size.width + safe_x_offset)
+            .min(safe_x_offset);
+        let max_x = px(0.);
+        point(
+            offset.x.clamp(min_x, max_x),
+            if self.mode.is_single_line() {
+                px(0.)
+            } else {
+                offset.y.clamp(min_y, max_y)
+            },
+        )
     }
 
     /// Laid-out line height; `None` before first layout.
@@ -3280,6 +3303,60 @@ mod tests {
                      — paint would jitter (Bug C regression)",
                     deferred.y,
                     safe_y_min,
+                );
+            });
+        });
+    }
+
+    /// `set_scroll_offset` exposes a pending value before paint; `clamp_scroll_offset`
+    /// uses layout metrics to bound an out-of-range target before commit.
+    #[gpui::test]
+    fn test_set_scroll_offset_pending_and_clamp(cx: &mut TestAppContext) {
+        let input_view = InputView::new(cx);
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                let text: String = (1..=50)
+                    .map(|i| format!("line {i}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                state.set_value(text, window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        let out_of_range = point(px(0.), px(-9_999.));
+        cx.update(|_, cx| {
+            input.update(cx, |state, cx| {
+                assert!(
+                    state.scroll_size.height > px(0.),
+                    "scroll_size not populated by initial paint"
+                );
+                assert!(
+                    state.input_bounds.size.height > px(0.),
+                    "input_bounds not populated by initial paint"
+                );
+
+                state.set_scroll_offset(out_of_range, cx);
+                assert_eq!(state.scroll_offset_pending(), Some(out_of_range));
+                assert_ne!(
+                    state.clamp_scroll_offset(out_of_range),
+                    out_of_range,
+                    "out-of-range offset should be clamped using layout metrics"
+                );
+            });
+        });
+
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            input.read_with(cx, |state, _| {
+                assert_eq!(state.scroll_offset_pending(), None);
+                assert_eq!(
+                    state.scroll_offset(),
+                    state.clamp_scroll_offset(out_of_range),
+                    "paint end should commit the clamped scroll offset"
                 );
             });
         });
