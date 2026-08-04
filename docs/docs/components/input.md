@@ -158,6 +158,24 @@ let input = cx.new(|cx|
 );
 ```
 
+### Scroll Position
+
+Multi-line and code-editor inputs can observe and set the viewport scroll offset.
+Use [`effective_scroll_offset`](https://docs.rs/gpui-component/latest/gpui_component/input/struct.InputState.html#method.effective_scroll_offset) when synchronizing scroll between editors so in-flight values scheduled by [`set_scroll_offset`](https://docs.rs/gpui-component/latest/gpui_component/input/struct.InputState.html#method.set_scroll_offset) are visible before paint commits them. Use [`scroll_offset_pending`](https://docs.rs/gpui-component/latest/gpui_component/input/struct.InputState.html#method.scroll_offset_pending) when you need to distinguish a pending offset from the committed [`scroll_offset`](https://docs.rs/gpui-component/latest/gpui_component/input/struct.InputState.html#method.scroll_offset).
+
+```rust
+use gpui::point;
+
+// Observe the offset that will be used on the next paint.
+let offset = state.effective_scroll_offset();
+
+// Map a source pane's offset into another pane's valid scroll range.
+let sync_offset = target_state.clamp_scroll_offset(source_offset);
+target_input.update(cx, |state, cx| {
+    state.set_scroll_offset(sync_offset, cx);
+});
+```
+
 ### Handle Input Events
 
 ```rust
