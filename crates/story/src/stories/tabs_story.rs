@@ -178,11 +178,8 @@ impl Render for TabsStory {
                                 cx.notify();
                             })),
                     )
-                    .child(
-                        Select::new(&self.max_width_select)
-                            .w_48()
-                            .title_prefix("Max tab width: "),
-                    ),
+                    .child("Max tab width")
+                    .child(Select::new(&self.max_width_select).w_32()),
             )
             .child(
                 section("Tabs").max_w_md().child(
