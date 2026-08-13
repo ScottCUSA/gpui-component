@@ -301,8 +301,21 @@ impl TreeState {
         self.set_expanded(id, !expanded, cx);
     }
 
+    /// Expands every folder in the tree.
+    pub fn expand_all(&mut self, cx: &mut Context<Self>) {
+        self.set_all_expanded(true, cx);
+    }
+
+    /// Collapses every folder in the tree.
+    pub fn collapse_all(&mut self, cx: &mut Context<Self>) {
+        self.set_all_expanded(false, cx);
+    }
+
     /// Returns the root items, each of which owns its full subtree.
-    fn roots(&self) -> impl Iterator<Item = &TreeItem> {
+    ///
+    /// Unlike [`Self::entry`], this reaches items hidden inside collapsed folders,
+    /// so callers can query or persist the whole tree.
+    pub fn roots(&self) -> impl Iterator<Item = &TreeItem> {
         self.entries
             .iter()
             .filter(|entry| entry.is_root())
@@ -310,7 +323,7 @@ impl TreeState {
     }
 
     /// Returns the item with `id`, searching the whole tree including collapsed folders.
-    fn item(&self, id: &SharedString) -> Option<&TreeItem> {
+    pub fn item(&self, id: &SharedString) -> Option<&TreeItem> {
         fn find<'a>(item: &'a TreeItem, id: &SharedString) -> Option<&'a TreeItem> {
             if item.id == *id {
                 return Some(item);
@@ -319,6 +332,37 @@ impl TreeState {
         }
 
         self.roots().find_map(|root| find(root, id))
+    }
+
+    fn set_all_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
+        fn apply(item: &TreeItem, expanded: bool, changed: &mut Vec<SharedString>) {
+            if item.is_folder() && item.is_expanded() != expanded {
+                item.state.borrow_mut().expanded = expanded;
+                changed.push(item.id.clone());
+            }
+            for child in &item.children {
+                apply(child, expanded, changed);
+            }
+        }
+
+        let mut changed = Vec::new();
+        for root in self.roots() {
+            apply(root, expanded, &mut changed);
+        }
+        if changed.is_empty() {
+            return;
+        }
+
+        for id in changed {
+            cx.emit(if expanded {
+                TreeEvent::Expanded(id)
+            } else {
+                TreeEvent::Collapsed(id)
+            });
+        }
+        self.right_clicked_ix = None;
+        self.rebuild_entries();
+        cx.notify();
     }
 
     pub fn reveal_item(
@@ -763,6 +807,66 @@ mod tests {
 
         let events = collector.read_with(cx, |collector, _| collector.events.borrow().clone());
         assert!(events.is_empty());
+    }
+
+    #[gpui::test]
+    fn expand_all_and_collapse_all_round_trip(cx: &mut gpui::TestAppContext) {
+        let state = cx.new(|cx| TreeState::new(cx).items(nested_items()));
+        let collector = cx.new(|cx| EventCollector::new(&state, cx));
+
+        state.update(cx, |state, cx| {
+            state.expand_all(cx);
+            assert_eq!(state.entries.len(), 5);
+            state.collapse_all(cx);
+            assert_eq!(state.entries.len(), 2);
+            // Already collapsed, so nothing more is emitted.
+            state.collapse_all(cx);
+        });
+
+        let events = collector.read_with(cx, |collector, _| collector.events.borrow().clone());
+        assert_eq!(
+            events,
+            vec![
+                TreeEvent::Expanded("src".into()),
+                TreeEvent::Expanded("src/ui".into()),
+                TreeEvent::Collapsed("src".into()),
+                TreeEvent::Collapsed("src/ui".into()),
+            ]
+        );
+    }
+
+    #[gpui::test]
+    fn roots_expose_the_whole_tree_for_persistence(cx: &mut gpui::TestAppContext) {
+        let state = cx.new(|cx| TreeState::new(cx).items(nested_items()));
+
+        state.update(cx, |state, cx| {
+            state.set_expanded(&"src/ui".into(), true, cx);
+
+            // An app can save expansion state by walking the roots, with no shadow
+            // bookkeeping and no dependence on which rows happen to be visible.
+            fn collect(item: &TreeItem, out: &mut Vec<SharedString>) {
+                if item.is_folder() && item.is_expanded() {
+                    out.push(item.id.clone());
+                }
+                for child in &item.children {
+                    collect(child, out);
+                }
+            }
+
+            let mut expanded = Vec::new();
+            for root in state.roots() {
+                collect(root, &mut expanded);
+            }
+            assert_eq!(expanded, vec![SharedString::from("src/ui")]);
+
+            // ...and restore it with the same primitives.
+            state.collapse_all(cx);
+            for id in &expanded {
+                state.set_expanded(id, true, cx);
+            }
+            assert!(state.is_expanded(&"src/ui".into()));
+            assert!(!state.is_expanded(&"src".into()));
+        });
     }
 
     #[gpui::test]
