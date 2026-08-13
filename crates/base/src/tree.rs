@@ -263,6 +263,64 @@ impl TreeState {
         self.entries.iter().position(|entry| &entry.item.id == id)
     }
 
+    /// Returns whether the folder with `id` is expanded.
+    pub fn is_expanded(&self, id: &SharedString) -> bool {
+        self.item(id).is_some_and(TreeItem::is_expanded)
+    }
+
+    /// Expands or collapses the folder with `id`, wherever it sits in the tree.
+    ///
+    /// Leaves the selection alone, so a disclosure control can toggle a folder
+    /// without also selecting its row. Does nothing when `id` is missing, is not a
+    /// folder, or already matches `expanded`.
+    pub fn set_expanded(&mut self, id: &SharedString, expanded: bool, cx: &mut Context<Self>) {
+        let Some(item) = self.item(id) else {
+            return;
+        };
+        if !item.is_folder() || item.is_expanded() == expanded {
+            return;
+        }
+
+        item.state.borrow_mut().expanded = expanded;
+        let id = item.id.clone();
+        cx.emit(if expanded {
+            TreeEvent::Expanded(id)
+        } else {
+            TreeEvent::Collapsed(id)
+        });
+        self.right_clicked_ix = None;
+        self.rebuild_entries();
+        cx.notify();
+    }
+
+    /// Toggles the folder with `id`. See [`Self::set_expanded`].
+    pub fn toggle_expanded(&mut self, id: &SharedString, cx: &mut Context<Self>) {
+        let Some(expanded) = self.item(id).map(TreeItem::is_expanded) else {
+            return;
+        };
+        self.set_expanded(id, !expanded, cx);
+    }
+
+    /// Returns the root items, each of which owns its full subtree.
+    fn roots(&self) -> impl Iterator<Item = &TreeItem> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.is_root())
+            .map(TreeEntry::item)
+    }
+
+    /// Returns the item with `id`, searching the whole tree including collapsed folders.
+    fn item(&self, id: &SharedString) -> Option<&TreeItem> {
+        fn find<'a>(item: &'a TreeItem, id: &SharedString) -> Option<&'a TreeItem> {
+            if item.id == *id {
+                return Some(item);
+            }
+            item.children.iter().find_map(|child| find(child, id))
+        }
+
+        self.roots().find_map(|root| find(root, id))
+    }
+
     pub fn reveal_item(
         &mut self,
         id: &SharedString,
@@ -288,9 +346,8 @@ impl TreeState {
 
     fn expand_ancestors(&mut self, target_id: SharedString, cx: &mut Context<Self>) {
         let ancestors = self
-            .entries
-            .iter()
-            .find_map(|entry| entry.item.ancestors(&target_id))
+            .roots()
+            .find_map(|root| root.ancestors(&target_id))
             .unwrap_or_default();
 
         if ancestors.is_empty() {
@@ -316,33 +373,35 @@ impl TreeState {
     }
 
     fn toggle_expand(&mut self, ix: usize, cx: &mut Context<Self>) {
-        let Some(entry) = self.entries.get(ix) else {
+        let Some(id) = self.entries.get(ix).map(|entry| entry.item.id.clone()) else {
             return;
         };
-        if !entry.is_folder() {
-            return;
-        }
-
-        let expanded = !entry.is_expanded();
-        let id = entry.item.id.clone();
-        entry.item.state.borrow_mut().expanded = expanded;
-        cx.emit(if expanded {
-            TreeEvent::Expanded(id)
-        } else {
-            TreeEvent::Collapsed(id)
-        });
-        self.right_clicked_ix = None;
-        self.rebuild_entries();
+        self.toggle_expanded(&id, cx);
     }
 
     fn rebuild_entries(&mut self) {
-        let roots = self
-            .entries
-            .iter()
-            .filter(|entry| entry.is_root())
-            .map(|entry| entry.item.clone())
-            .collect::<Vec<_>>();
+        // Flat indices shift whenever the visible rows change, so the selection is
+        // remembered by item id and resolved again once the rows are rebuilt.
+        let selected_id = self
+            .selected_ix
+            .and_then(|ix| self.entries.get(ix))
+            .map(|entry| entry.item.id.clone());
+        let roots = self.roots().cloned().collect::<Vec<_>>();
         self.replace_items(roots);
+        self.selected_ix = selected_id.and_then(|id| self.resolve_selection(&id));
+    }
+
+    /// Resolves `id` to its row, falling back to the nearest visible ancestor when a
+    /// collapsed folder has hidden the item.
+    fn resolve_selection(&self, id: &SharedString) -> Option<usize> {
+        if let Some(ix) = self.index_of(id) {
+            return Some(ix);
+        }
+
+        self.roots()
+            .find_map(|root| root.ancestors(id))?
+            .iter()
+            .find_map(|ancestor| self.index_of(&ancestor.id))
     }
 
     fn on_action_confirm(&mut self, _: &Confirm, _: &mut Window, cx: &mut Context<Self>) {
@@ -639,5 +698,109 @@ mod tests {
                 TreeEvent::Collapsed("src".into()),
             ]
         );
+    }
+
+    fn nested_items() -> Vec<TreeItem> {
+        vec![
+            TreeItem::new("src", "src").children([
+                TreeItem::new("src/ui", "ui").child(TreeItem::new("src/ui/tree.rs", "tree.rs")),
+                TreeItem::new("src/lib.rs", "lib.rs"),
+            ]),
+            TreeItem::new("README.md", "README.md"),
+        ]
+    }
+
+    #[gpui::test]
+    fn set_expanded_leaves_the_selection_alone(cx: &mut gpui::TestAppContext) {
+        let state = cx.new(|cx| TreeState::new(cx).items(nested_items()));
+
+        state.update(cx, |state, cx| {
+            state.set_selected_index(Some(1), cx);
+            state.set_expanded(&"src".into(), true, cx);
+            assert_eq!(
+                state.selected_item().map(|item| item.id.as_str()),
+                Some("README.md")
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn set_expanded_reaches_folders_inside_collapsed_ones(cx: &mut gpui::TestAppContext) {
+        let state = cx.new(|cx| TreeState::new(cx).items(nested_items()));
+
+        state.update(cx, |state, cx| {
+            // `src/ui` is not a visible row while `src` is collapsed.
+            assert!(state.index_of(&"src/ui".into()).is_none());
+            state.set_expanded(&"src/ui".into(), true, cx);
+            assert!(state.is_expanded(&"src/ui".into()));
+            assert_eq!(state.entries.len(), 2);
+
+            // Opening the parent now reveals the subtree that was expanded while hidden.
+            state.set_expanded(&"src".into(), true, cx);
+            let ids = state
+                .entries
+                .iter()
+                .map(|entry| entry.item.id.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                ids,
+                vec!["src", "src/ui", "src/ui/tree.rs", "src/lib.rs", "README.md"]
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn set_expanded_ignores_leaves_and_unchanged_folders(cx: &mut gpui::TestAppContext) {
+        let state = cx.new(|cx| TreeState::new(cx).items(nested_items()));
+        let collector = cx.new(|cx| EventCollector::new(&state, cx));
+
+        state.update(cx, |state, cx| {
+            state.set_expanded(&"README.md".into(), true, cx);
+            state.set_expanded(&"missing".into(), true, cx);
+            state.set_expanded(&"src".into(), false, cx);
+            assert!(!state.is_expanded(&"README.md".into()));
+        });
+
+        let events = collector.read_with(cx, |collector, _| collector.events.borrow().clone());
+        assert!(events.is_empty());
+    }
+
+    #[gpui::test]
+    fn expanding_a_folder_keeps_the_selected_item(cx: &mut gpui::TestAppContext) {
+        let items = vec![
+            TreeItem::new("src", "src").child(TreeItem::new("src/lib.rs", "lib.rs")),
+            TreeItem::new("README.md", "README.md"),
+        ];
+        let state = cx.new(|cx| TreeState::new(cx).items(items));
+
+        state.update(cx, |state, cx| {
+            state.set_selected_index(Some(1), cx);
+            state.toggle_expand(0, cx);
+            assert_eq!(state.selected_index(), Some(2));
+            assert_eq!(
+                state.selected_item().map(|item| item.id.as_str()),
+                Some("README.md")
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn collapsing_an_ancestor_selects_that_ancestor(cx: &mut gpui::TestAppContext) {
+        let root = TreeItem::new("src", "src").expanded(true).child(
+            TreeItem::new("src/ui", "ui")
+                .expanded(true)
+                .child(TreeItem::new("src/ui/tree.rs", "tree.rs")),
+        );
+        let state = cx.new(|cx| TreeState::new(cx).items(vec![root]));
+
+        state.update(cx, |state, cx| {
+            state.set_selected_index(Some(2), cx);
+            state.toggle_expand(0, cx);
+            assert_eq!(state.selected_index(), Some(0));
+            assert_eq!(
+                state.selected_item().map(|item| item.id.as_str()),
+                Some("src")
+            );
+        });
     }
 }
