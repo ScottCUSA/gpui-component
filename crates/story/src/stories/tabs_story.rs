@@ -1,19 +1,24 @@
 use gpui::{
-    App, AppContext, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Render,
-    SharedString, Styled, Window, prelude::FluentBuilder as _, px,
+    Action, App, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement,
+    IntoElement, ParentElement, Render, Styled, Window, prelude::FluentBuilder as _, px,
 };
+use serde::Deserialize;
 
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, IndexPath, Selectable as _, Sizable, Size,
+    ActiveTheme as _, Icon, IconName, Selectable as _, Sizable, Size,
     button::{Button, ButtonGroup, ButtonVariants},
     checkbox::Checkbox,
     h_flex,
-    select::{Select, SelectState},
+    menu::DropdownMenu as _,
     tab::{Tab, TabBar},
     v_flex,
 };
 
 use crate::section;
+
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = tabs_story, no_json)]
+struct SetMaxTabWidth(usize);
 
 /// The max tab widths to choose from in the story, `None` leaves tabs uncapped.
 const MAX_WIDTHS: [Option<f32>; 5] = [None, Some(60.), Some(90.), Some(120.), Some(160.)];
@@ -26,7 +31,7 @@ pub struct TabsStory {
     dynamic_next_tab_id: usize,
     size: Size,
     menu: bool,
-    max_width_select: Entity<SelectState<Vec<SharedString>>>,
+    max_width_ix: usize,
 }
 
 impl super::Story for TabsStory {
@@ -48,22 +53,7 @@ impl TabsStory {
         cx.new(|cx| Self::new(window, cx))
     }
 
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let max_width_select = cx.new(|cx| {
-            SelectState::new(
-                MAX_WIDTHS
-                    .iter()
-                    .map(|width| match width {
-                        Some(width) => SharedString::from(format!("{width:.0}px")),
-                        None => SharedString::from("Unlimited"),
-                    })
-                    .collect::<Vec<_>>(),
-                Some(IndexPath::default()),
-                window,
-                cx,
-            )
-        });
-
+    fn new(_: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
             active_tab_ix: 0,
@@ -72,7 +62,7 @@ impl TabsStory {
             dynamic_next_tab_id: 3,
             size: Size::default(),
             menu: false,
-            max_width_select,
+            max_width_ix: 0,
         }
     }
 
@@ -120,16 +110,19 @@ impl Focusable for TabsStory {
 
 impl Render for TabsStory {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let max_width = self
-            .max_width_select
-            .read(cx)
-            .selected_index(cx)
-            .and_then(|ix| MAX_WIDTHS.get(ix.row).copied().flatten())
-            .map(px);
+        let max_width = MAX_WIDTHS[self.max_width_ix].map(px);
+        let max_width_label = |width: Option<f32>| match width {
+            Some(width) => format!("{width:.0}px"),
+            None => "Unlimited".into(),
+        };
 
         v_flex()
             .w_full()
             .gap_3()
+            .on_action(cx.listener(|this, action: &SetMaxTabWidth, _, cx| {
+                this.max_width_ix = action.0;
+                cx.notify();
+            }))
             .child(
                 h_flex()
                     .gap_3()
@@ -178,8 +171,30 @@ impl Render for TabsStory {
                                 cx.notify();
                             })),
                     )
-                    .child("Max tab width")
-                    .child(Select::new(&self.max_width_select).w_32()),
+                    .child(
+                        Button::new("tabs-max-width")
+                            .outline()
+                            .compact()
+                            .label(format!(
+                                "Max width: {}",
+                                max_width_label(MAX_WIDTHS[self.max_width_ix])
+                            ))
+                            .dropdown_menu({
+                                let max_width_ix = self.max_width_ix;
+                                move |menu, _, _| {
+                                    MAX_WIDTHS
+                                        .iter()
+                                        .enumerate()
+                                        .fold(menu, |menu, (ix, width)| {
+                                            menu.menu_with_check(
+                                                max_width_label(*width),
+                                                ix == max_width_ix,
+                                                Box::new(SetMaxTabWidth(ix)),
+                                            )
+                                        })
+                                }
+                            }),
+                    ),
             )
             .child(
                 section("Tabs").max_w_md().child(
