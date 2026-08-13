@@ -336,6 +336,12 @@ impl TreeState {
     }
 
     fn rebuild_entries(&mut self) {
+        // Flat indices shift whenever the visible rows change, so the selection is
+        // remembered by item id and resolved again once the rows are rebuilt.
+        let selected_id = self
+            .selected_ix
+            .and_then(|ix| self.entries.get(ix))
+            .map(|entry| entry.item.id.clone());
         let roots = self
             .entries
             .iter()
@@ -343,6 +349,22 @@ impl TreeState {
             .map(|entry| entry.item.clone())
             .collect::<Vec<_>>();
         self.replace_items(roots);
+        self.selected_ix = selected_id.and_then(|id| self.resolve_selection(&id));
+    }
+
+    /// Resolves `id` to its row, falling back to the nearest visible ancestor when a
+    /// collapsed folder has hidden the item.
+    fn resolve_selection(&self, id: &SharedString) -> Option<usize> {
+        if let Some(ix) = self.index_of(id) {
+            return Some(ix);
+        }
+
+        self.entries
+            .iter()
+            .filter(|entry| entry.is_root())
+            .find_map(|entry| entry.item.ancestors(id))?
+            .iter()
+            .find_map(|ancestor| self.index_of(&ancestor.id))
     }
 
     fn on_action_confirm(&mut self, _: &Confirm, _: &mut Window, cx: &mut Context<Self>) {
@@ -639,5 +661,44 @@ mod tests {
                 TreeEvent::Collapsed("src".into()),
             ]
         );
+    }
+
+    #[gpui::test]
+    fn expanding_a_folder_keeps_the_selected_item(cx: &mut gpui::TestAppContext) {
+        let items = vec![
+            TreeItem::new("src", "src").child(TreeItem::new("src/lib.rs", "lib.rs")),
+            TreeItem::new("README.md", "README.md"),
+        ];
+        let state = cx.new(|cx| TreeState::new(cx).items(items));
+
+        state.update(cx, |state, cx| {
+            state.set_selected_index(Some(1), cx);
+            state.toggle_expand(0, cx);
+            assert_eq!(state.selected_index(), Some(2));
+            assert_eq!(
+                state.selected_item().map(|item| item.id.as_str()),
+                Some("README.md")
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn collapsing_an_ancestor_selects_that_ancestor(cx: &mut gpui::TestAppContext) {
+        let root = TreeItem::new("src", "src").expanded(true).child(
+            TreeItem::new("src/ui", "ui")
+                .expanded(true)
+                .child(TreeItem::new("src/ui/tree.rs", "tree.rs")),
+        );
+        let state = cx.new(|cx| TreeState::new(cx).items(vec![root]));
+
+        state.update(cx, |state, cx| {
+            state.set_selected_index(Some(2), cx);
+            state.toggle_expand(0, cx);
+            assert_eq!(state.selected_index(), Some(0));
+            assert_eq!(
+                state.selected_item().map(|item| item.id.as_str()),
+                Some("src")
+            );
+        });
     }
 }
