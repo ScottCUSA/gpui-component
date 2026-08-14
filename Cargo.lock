@@ -2385,6 +2385,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fps_monitor"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "gpui-fps",
+ "gpui_platform",
+]
+
+[[package]]
 name = "freetype-sys"
 version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3166,8 +3175,10 @@ dependencies = [
  "fake",
  "getrandom 0.2.17",
  "gpui",
+ "gpui-base",
  "gpui-component",
  "gpui-component-assets",
+ "gpui-fps",
  "gpui_platform",
  "gpui_web",
  "gtk",
@@ -3201,6 +3212,15 @@ dependencies = [
  "log",
  "tracing-wasm",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "gpui-fps"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "instant",
+ "sysinfo 0.37.2",
 ]
 
 [[package]]
